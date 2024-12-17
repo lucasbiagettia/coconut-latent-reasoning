@@ -163,5 +163,10 @@ cython_debug/
 
 # Proof of concept
 poc/
+
 # Checkpoints
 checkpoints/
+
+# Datasets
+data/raw
+data/processed

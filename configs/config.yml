@@ -1,0 +1,20 @@
+# Hiperparámetros de Entrenamiento
+batch_size: 1                  # Tamaño del batch para entrenamiento
+learning_rate: 0.0001          # Tasa de aprendizaje
+num_stages: 3                  # Número de etapas en el currículum de entrenamiento
+latent_steps_per_stage: 1      # Número de pasos latentes agregados en cada etapa
+epochs_per_stage: 3            # Número de épocas por etapa
+
+# Hiperparámetros del Modelo
+pretrained_model_name: "gpt2"  # Modelo base (GPT-2)
+
+# Configuración de Datos
+max_length: 128                # Longitud máxima de las secuencias de entrada
+train_data_path: "data/train.json"  # Ruta a los datos de entrenamiento
+val_data_path: "data/val.json"      # Ruta a los datos de validación
+
+# Guardado de Modelos
+checkpoint_dir: "checkpoints"  # Directorio para almacenar los checkpoints
+
+# Dispositivo
+device: "cpu"                 # 'cuda' para GPU o 'cpu'

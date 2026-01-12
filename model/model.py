@@ -22,30 +22,51 @@ class CoconutModel(nn.Module):
 
     def forward(self, input_ids, attention_mask, mode="language", latent_steps=1):
         """
-        Forward pass del modelo Coconut.
+        Forward pass for Coconut model.
 
         Args:
-            input_ids (torch.Tensor): IDs de los tokens de entrada.
-            attention_mask (torch.Tensor): Máscara de atención.
-            mode (str): "language" para CoT, "latent" para modo latente.
-            latent_steps (int): Número de pasos en modo latente.
+            input_ids (torch.Tensor): Input token IDs.
+            attention_mask (torch.Tensor): Attention mask.
+            mode (str): "language" for standard CoT, "latent" for continuous thought mode.
+            latent_steps (int): Number of continuous thought steps in latent mode.
 
         Returns:
-            logits (torch.Tensor) en modo lenguaje.
-            hidden_states (torch.Tensor) en modo latente.
+            logits (torch.Tensor) in language mode.
+            Tuple of (hidden_states, accumulated_embeds) in latent mode.
         """
-        outputs = self.llm(input_ids, attention_mask=attention_mask, output_hidden_states=True)
-        hidden_states = outputs.hidden_states[-1]  # Última capa de hidden states
-
+        # Get initial embeddings from input tokens
+        input_embeds = self.llm.transformer.wte(input_ids)
+        
         if mode == "latent":
+            # Start with the input embeddings
+            current_embeds = input_embeds
+            current_mask = attention_mask
+            
             for _ in range(latent_steps):
-                latent_input = self.latent_layer(hidden_states)  # Shape: [batch_size, hidden_size]
-                latent_input = latent_input.unsqueeze(1)  # Shape: [batch_size, 1, hidden_size]
-
-                # No se necesita attention_mask aquí
-                hidden_states = self.llm(inputs_embeds=latent_input, output_hidden_states=True).hidden_states[-1]
-            return hidden_states
+                # Forward pass to get hidden states
+                outputs = self.llm(inputs_embeds=current_embeds, 
+                                   attention_mask=current_mask, 
+                                   output_hidden_states=True)
+                hidden_states = outputs.hidden_states[-1]
+                
+                # Get last hidden state as "continuous thought"
+                continuous_thought = self.latent_layer(hidden_states)  # [batch, hidden_size]
+                continuous_thought = continuous_thought.unsqueeze(1)   # [batch, 1, hidden_size]
+                
+                # Concatenate continuous thought to sequence (paper: Et = [..., hi, hi+1, ...])
+                current_embeds = torch.cat([current_embeds, continuous_thought], dim=1)
+                
+                # Extend attention mask for new token
+                new_mask = torch.ones((current_mask.shape[0], 1), device=current_mask.device)
+                current_mask = torch.cat([current_mask, new_mask], dim=1)
+            
+            # Return final hidden states and the accumulated embeddings for further generation
+            final_outputs = self.llm(inputs_embeds=current_embeds, 
+                                     attention_mask=current_mask, 
+                                     output_hidden_states=True)
+            return final_outputs.hidden_states[-1], current_embeds, current_mask
 
         else:
-            # Modo lenguaje: generar logits
+            # Language mode: standard forward pass
+            outputs = self.llm(input_ids, attention_mask=attention_mask, output_hidden_states=True)
             return outputs.logits

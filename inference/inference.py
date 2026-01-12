@@ -5,18 +5,18 @@ from model.tokenizer import load_tokenizer
 class CoconutInference:
     def __init__(self, model_path, tokenizer_name="gpt2", device="cuda"):
         """
-        Inicializa el modelo Coconut para inferencia.
+        Initialize Coconut model for inference.
 
         Args:
-            model_path (str): Ruta al checkpoint del modelo.
-            tokenizer_name (str): Nombre del tokenizer preentrenado.
-            device (str): 'cuda' o 'cpu'.
+            model_path (str): Path to model checkpoint.
+            tokenizer_name (str): Name of pretrained tokenizer.
+            device (str): 'cuda' or 'cpu'.
         """
         self.device = torch.device(device)
         self.tokenizer = load_tokenizer(tokenizer_name)
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Cargar modelo entrenado
+        # Load trained model
         self.model = CoconutModel(pretrained_model_name=tokenizer_name)
         checkpoint = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
@@ -25,41 +25,47 @@ class CoconutInference:
 
     def infer(self, question, latent_steps=2, mode="latent"):
         """
-        Realiza la inferencia.
+        Run inference.
 
         Args:
-            question (str): Pregunta a resolver.
-            latent_steps (int): Número de pasos latentes a utilizar.
-            mode (str): 'latent' para modo latente o 'language' para modo lenguaje.
+            question (str): Question to solve.
+            latent_steps (int): Number of continuous thought steps.
+            mode (str): 'latent' for latent mode or 'language' for language mode.
 
         Returns:
-            str: Respuesta generada por el modelo.
+            str: Generated response.
         """
-        # Preparar entrada con <bot> y <eot>
-        input_text = f"<bot> {question} <eot>"
+        # Paper format: question <bot> (latent thoughts inserted here)
+        input_text = f"{question} <bot>"
         inputs = self.tokenizer(input_text, return_tensors="pt", padding=True).to(self.device)
 
         with torch.no_grad():
             if mode == "latent":
-                hidden_states = self.model(inputs.input_ids,
-                                            inputs.attention_mask, 
-                                            mode="latent", 
-                                            latent_steps=latent_steps)
-                output = self.model.llm.generate(inputs_embeds=hidden_states,
-                                                    max_length=50, 
-                                                    pad_token_id=self.tokenizer.pad_token_id)
+                # Get hidden states and accumulated embeddings from latent reasoning
+                hidden_states, embeds, mask = self.model(
+                    inputs.input_ids,
+                    inputs.attention_mask, 
+                    mode="latent", 
+                    latent_steps=latent_steps
+                )
+                # Generate from the accumulated embeddings (with latent thoughts)
+                output = self.model.llm.generate(
+                    inputs_embeds=embeds,
+                    attention_mask=mask,
+                    max_new_tokens=50, 
+                    pad_token_id=self.tokenizer.pad_token_id
+                )
 
             else:
-                # Modo lenguaje: generación estándar
+                # Language mode: standard generation
                 output = self.model.llm.generate(
                     input_ids=inputs.input_ids,
                     attention_mask=inputs.attention_mask,
-                    max_length=50,
+                    max_new_tokens=50,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id
                 )
 
-
-        # Decodificar y retornar la respuesta
+        # Decode and return response
         response = self.tokenizer.decode(output[0], skip_special_tokens=True)
         return response

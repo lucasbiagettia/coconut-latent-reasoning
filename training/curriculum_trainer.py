@@ -9,14 +9,14 @@ from data.datasets import CoconutDataset
 class CurriculumTrainer:
     def __init__(self, model, tokenizer, train_dataset, val_dataset, config):
         """
-        Entrenador con currículum multi-etapas para el modelo Coconut.
+        Multi-stage curriculum trainer for Coconut model.
 
         Args:
-            model (nn.Module): Modelo Coconut.
-            tokenizer: Tokenizador con tokens especiales <bot> y <eot>.
-            train_dataset: Dataset de entrenamiento.
-            val_dataset: Dataset de validación.
-            config (dict): Configuración con hiperparámetros.
+            model (nn.Module): Coconut model.
+            tokenizer: Tokenizer with special tokens <bot> and <eot>.
+            train_dataset: Training dataset.
+            val_dataset: Validation dataset.
+            config (dict): Configuration with hyperparameters.
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -24,21 +24,21 @@ class CurriculumTrainer:
         self.device = torch.device(config["device"])
         self.model.to(self.device)
 
-        # Configurar los DataLoaders
+        # Configure DataLoaders
         self.train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
         self.val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
-        # Configuración del optimizador y función de pérdida
+        # Optimizer and loss function
         self.optimizer = optim.AdamW(self.model.parameters(), lr=config["learning_rate"])
         self.criterion = torch.nn.CrossEntropyLoss()
 
 
     def validate(self, val_loader):
         """
-        Valida el modelo en un conjunto de validación.
+        Validate model on validation set.
 
         Args:
-            val_loader (DataLoader): Loader del conjunto de validación.
+            val_loader (DataLoader): Validation data loader.
         """
         self.model.eval()
         val_loss = 0.0
@@ -53,7 +53,7 @@ class CurriculumTrainer:
                 loss = self.criterion(outputs.view(-1, outputs.size(-1)), labels.view(-1))
                 val_loss += loss.item()
 
-                # Cálculo de exactitud
+                # Accuracy calculation
                 preds = torch.argmax(outputs, dim=-1)
                 correct += (preds == labels).sum().item()
                 total += labels.numel()
@@ -66,46 +66,60 @@ class CurriculumTrainer:
 
     def train(self):
         """
-        Entrena el modelo siguiendo el currículum multi-etapas.
-        - Etapa 0: Entrenamiento con CoT completo.
-        - Etapas posteriores: Reemplazo progresivo de razonamiento en lenguaje con pensamientos continuos.
-        - Validación al final de cada etapa y guardado de checkpoints.
+        Train model following multi-stage curriculum.
+        - Stage 0: Training with full CoT.
+        - Later stages: Progressive replacement of language reasoning with continuous thoughts.
+        - Validation at end of each stage and checkpoint saving.
         """
         for stage in range(self.config["num_stages"]):
-            print(f"\n--- Entrenamiento Etapa {stage + 1}/{self.config['num_stages']} ---")
+            print(f"\n--- Training Stage {stage + 1}/{self.config['num_stages']} ---")
             self._reset_optimizer()
 
-            # Configurar cantidad de pasos latentes para esta etapa
+            # Configure latent steps for this stage
             latent_steps = stage * self.config["latent_steps_per_stage"]
 
             for epoch in range(self.config["epochs_per_stage"]):
                 epoch_loss = 0.0
                 self.model.train()
 
-                # Iterar sobre el DataLoader de entrenamiento
-                for batch in tqdm(self.train_loader, desc=f"Etapa {stage + 1} - Epoch {epoch + 1}"):
+                # Iterate over training DataLoader
+                for batch in tqdm(self.train_loader, desc=f"Stage {stage + 1} - Epoch {epoch + 1}"):
                     inputs, labels = batch["input_ids"].to(self.device), batch["labels"].to(self.device)
+                    attention_mask = batch["attention_mask"].to(self.device)
 
                     # Forward pass
                     self.optimizer.zero_grad()
+                    
                     if latent_steps > 0:
-                        outputs = self.model(inputs, attention_mask=batch["attention_mask"].to(self.device),
-                                            mode="latent", latent_steps=latent_steps)
-                    logits = self.model(inputs, attention_mask=batch["attention_mask"], mode="language")
-
-                    # Calcular pérdida
-                    loss = self.criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
+                        # Latent mode: get hidden states with accumulated context
+                        hidden_states, embeds, mask = self.model(
+                            inputs, attention_mask=attention_mask,
+                            mode="latent", latent_steps=latent_steps
+                        )
+                        # Get logits from the accumulated embeddings
+                        logits = self.model.llm(inputs_embeds=embeds, attention_mask=mask).logits
+                        # Align labels with extended sequence (pad labels for latent tokens)
+                        extended_labels = torch.cat([
+                            labels, 
+                            torch.full((labels.shape[0], latent_steps), -100, device=self.device)
+                        ], dim=1)
+                        loss = self.criterion(logits.view(-1, logits.size(-1)), extended_labels.view(-1))
+                    else:
+                        # Language mode: standard training
+                        logits = self.model(inputs, attention_mask=attention_mask, mode="language")
+                        loss = self.criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
+                    
                     loss.backward()
                     self.optimizer.step()
 
-                    # Acumular pérdida
+                    # Accumulate loss
                     epoch_loss += loss.item()
 
-                # Promediar pérdida de la época
+                # Average epoch loss
                 avg_epoch_loss = epoch_loss / len(self.train_loader)
                 print(f"Epoch {epoch + 1} Loss: {avg_epoch_loss:.4f}")
 
-            # Validar y guardar el modelo al final de la etapa
+            # Validate and save model at end of stage
             val_loss, val_accuracy = self.validate(self.val_loader)
             checkpoint_path = f"checkpoints/coconut_stage_{stage + 1}.pth"
             torch.save({
@@ -115,11 +129,11 @@ class CurriculumTrainer:
                 "val_accuracy": val_accuracy
             }, checkpoint_path)
 
-            print(f"Checkpoint guardado: {checkpoint_path}")
+            print(f"Checkpoint saved: {checkpoint_path}")
 
 
     def _reset_optimizer(self):
         """
-        Resetea el estado del optimizador.
+        Reset optimizer state (as specified in the paper).
         """
         self.optimizer = optim.AdamW(self.model.parameters(), lr=self.config["learning_rate"])

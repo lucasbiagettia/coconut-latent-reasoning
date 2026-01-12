@@ -3,7 +3,8 @@ import torch
 
 class CoconutDataset(Dataset):
     """
-    Dataset con formato compatible con el entrenamiento Coconut.
+    Dataset compatible with Coconut training format.
+    Format: question <bot> [latent thoughts here] <eot> reasoning answer
     """
     def __init__(self, tokenizer, data, max_length=128):
         self.tokenizer = tokenizer
@@ -18,8 +19,9 @@ class CoconutDataset(Dataset):
         reasoning = self.data[idx]["reasoning"]
         answer = self.data[idx]["answer"]
 
-        # Concatenar pregunta y razonamiento con tokens especiales
-        input_text = f"<bot> {reasoning} <eot> {answer}"
+        # Paper format: question <bot> <eot> reasoning answer
+        # During training, latent thoughts replace reasoning progressively
+        input_text = f"{question} <bot> <eot> {reasoning} Answer: {answer}"
         tokenized = self.tokenizer(input_text, max_length=self.max_length, padding="max_length",
                                    truncation=True, return_tensors="pt")
 

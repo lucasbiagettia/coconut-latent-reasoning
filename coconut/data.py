@@ -15,6 +15,13 @@ class ReasoningExample:
     answer: str
 
 
+@dataclass(frozen=True)
+class ColumnMapping:
+    question: str = "question"
+    steps: str = "steps"
+    answer: str = "answer"
+
+
 @runtime_checkable
 class ReasoningDatasetAdapter(Protocol):
     def load_split(self, split: str) -> Sequence[ReasoningExample]:
@@ -24,10 +31,15 @@ class ReasoningDatasetAdapter(Protocol):
 class JsonReasoningDatasetAdapter:
     """Load reasoning examples from JSON arrays or one-object-per-line JSONL."""
 
-    def __init__(self, split_paths: Mapping[str, str | Path]) -> None:
+    def __init__(
+        self,
+        split_paths: Mapping[str, str | Path],
+        columns: ColumnMapping = ColumnMapping(),
+    ) -> None:
         if not split_paths:
             raise ValueError("split_paths cannot be empty")
         self._split_paths = {name: Path(path) for name, path in split_paths.items()}
+        self._columns = columns
 
     def load_split(self, split: str) -> list[ReasoningExample]:
         try:
@@ -46,7 +58,10 @@ class JsonReasoningDatasetAdapter:
         else:
             raise ValueError(f"Expected a .json or .jsonl dataset, got: {path}")
 
-        return [self._parse_record(record, path, index) for index, record in enumerate(records)]
+        return [
+            _parse_record(record, self._columns, f"{path} record {index}")
+            for index, record in enumerate(records)
+        ]
 
     @staticmethod
     def _read_json(path: Path) -> list[Any]:
@@ -69,27 +84,66 @@ class JsonReasoningDatasetAdapter:
                     raise ValueError(f"Invalid JSON on {path}:{line_number}: {error}") from error
         return records
 
-    @staticmethod
-    def _parse_record(record: Any, path: Path, index: int) -> ReasoningExample:
-        location = f"{path} record {index}"
-        if not isinstance(record, dict):
-            raise ValueError(f"{location} must be an object")
 
-        missing = {"question", "steps", "answer"} - record.keys()
-        if missing:
-            raise ValueError(f"{location} is missing fields: {', '.join(sorted(missing))}")
 
-        question = record["question"]
-        steps = record["steps"]
-        answer = record["answer"]
-        if not isinstance(question, str) or not question.strip():
-            raise ValueError(f"{location}.question must be a non-empty string")
-        if not isinstance(answer, str) or not answer.strip():
-            raise ValueError(f"{location}.answer must be a non-empty string")
-        if not isinstance(steps, list) or not all(isinstance(step, str) for step in steps):
-            raise ValueError(f"{location}.steps must be a list of strings")
-        if any(not step.strip() for step in steps):
-            raise ValueError(f"{location}.steps cannot contain empty strings")
+class HuggingFaceDatasetAdapter:
+    """Load any Hub/local dataset whose columns can map to Coconut's schema."""
 
-        # Copy the list: the adapter owns no mutable state shared with the JSON parser.
-        return ReasoningExample(question=question, steps=list(steps), answer=answer)
+    def __init__(
+        self,
+        dataset_id: str,
+        config_name: str | None = None,
+        columns: ColumnMapping = ColumnMapping(),
+    ) -> None:
+        if not dataset_id:
+            raise ValueError("dataset_id cannot be empty")
+        self.dataset_id = dataset_id
+        self.config_name = config_name
+        self.columns = columns
+
+    def load_split(self, split: str) -> list[ReasoningExample]:
+        try:
+            from datasets import load_dataset
+        except ImportError as error:
+            raise ImportError(
+                "HuggingFaceDatasetAdapter requires the 'datasets' package"
+            ) from error
+
+        if self.config_name is None:
+            dataset = load_dataset(self.dataset_id, split=split)
+        else:
+            dataset = load_dataset(self.dataset_id, self.config_name, split=split)
+        return [
+            _parse_record(
+                record,
+                self.columns,
+                f"{self.dataset_id}[{split}] record {index}",
+            )
+            for index, record in enumerate(dataset)
+        ]
+
+
+def _parse_record(
+    record: Any, columns: ColumnMapping, location: str
+) -> ReasoningExample:
+    if not isinstance(record, Mapping):
+        raise ValueError(f"{location} must be an object")
+
+    names = {columns.question, columns.steps, columns.answer}
+    missing = names - record.keys()
+    if missing:
+        raise ValueError(f"{location} is missing columns: {', '.join(sorted(missing))}")
+
+    question = record[columns.question]
+    steps = record[columns.steps]
+    answer = record[columns.answer]
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError(f"{location}.{columns.question} must be a non-empty string")
+    if not isinstance(answer, str) or not answer.strip():
+        raise ValueError(f"{location}.{columns.answer} must be a non-empty string")
+    if not isinstance(steps, list) or not all(isinstance(step, str) for step in steps):
+        raise ValueError(f"{location}.{columns.steps} must be a list of strings")
+    if any(not step.strip() for step in steps):
+        raise ValueError(f"{location}.{columns.steps} cannot contain empty strings")
+
+    return ReasoningExample(question=question, steps=list(steps), answer=answer)

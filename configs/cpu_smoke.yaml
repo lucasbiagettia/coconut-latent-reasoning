@@ -1,9 +1,19 @@
 # One batch per stage is enough to verify the complete CPU pipeline.
 model_id: EleutherAI/pythia-14m
-train_path: data/toy/train.jsonl
-validation_path: data/toy/validation.jsonl
 checkpoint_dir: checkpoints/cpu_smoke
 device: cpu
+implementation: reference
+
+data:
+  type: json
+  train_path: data/toy/train.jsonl
+  validation_path: data/toy/validation.jsonl
+  train_split: train
+  validation_split: validation
+  columns:
+    question: question
+    steps: steps
+    answer: answer
 
 batch_size: 2
 learning_rate: 0.0001

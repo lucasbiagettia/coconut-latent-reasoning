@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import torch
 import torch.nn.functional as F
 
@@ -98,3 +100,89 @@ def test_backward_crosses_the_latent_reasoning_chain():
 
     gradient = base_model.embedding.weight.grad[prefix_token_id]
     assert gradient.abs().sum().item() > 0
+
+
+def test_batched_matches_reference_logits_loss_and_gradients():
+    tokenizer = CharacterTokenizer()
+    encoder = CurriculumEncoder(tokenizer, c=1)
+    examples = [
+        ReasoningExample("Short?", ["R1", "R2", "R3"], "A"),
+        ReasoningExample("A much longer question?", ["Only one step"], "B"),
+        ReasoningExample("Medium question?", ["First", "Second"], "C"),
+    ]
+    items = [encoder.encode(example, stage=2) for example in examples]
+    batch = CoconutCollator(encoder.token_ids.pad)(items)
+    reference_base = TinyCausalLM()
+    batched_base = deepcopy(reference_base)
+    reference = CoconutModel(
+        reference_base, encoder.token_ids.latent, implementation="reference"
+    )
+    batched = CoconutModel(
+        batched_base, encoder.token_ids.latent, implementation="batched"
+    )
+    reference.eval()
+    batched.eval()
+
+    reference_output = reference(**batch)
+    batched_output = batched(**batch)
+
+    relevant = batch["attention_mask"].bool()
+    torch.testing.assert_close(
+        batched_output.logits[relevant],
+        reference_output.logits[relevant],
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    torch.testing.assert_close(
+        batched_output.loss, reference_output.loss, rtol=1e-5, atol=1e-6
+    )
+
+    reference_output.loss.backward()
+    batched_output.loss.backward()
+    reference_gradients = dict(reference.named_parameters())
+    batched_gradients = dict(batched.named_parameters())
+    assert reference_gradients.keys() == batched_gradients.keys()
+    for name in reference_gradients:
+        torch.testing.assert_close(
+            batched_gradients[name].grad,
+            reference_gradients[name].grad,
+            rtol=2e-5,
+            atol=2e-6,
+            msg=lambda message, name=name: f"Gradient mismatch for {name}: {message}",
+        )
+
+    # 3+2+3 reference forwards versus (2 thoughts + final) and
+    # (1 thought + final) for the two compatible batched groups.
+    assert reference_base.forward_calls == 8
+    assert batched_base.forward_calls == 5
+
+
+def test_batched_stage_zero_parallelizes_normal_cot():
+    tokenizer = CharacterTokenizer()
+    encoder = CurriculumEncoder(tokenizer, c=1)
+    items = [
+        encoder.encode(ReasoningExample("Q", ["R1"], "A"), stage=0),
+        encoder.encode(
+            ReasoningExample("A longer question", ["R1", "R2"], "B"), stage=0
+        ),
+    ]
+    batch = CoconutCollator(encoder.token_ids.pad)(items)
+    reference_base = TinyCausalLM()
+    batched_base = deepcopy(reference_base)
+    reference = CoconutModel(
+        reference_base, encoder.token_ids.latent, implementation="reference"
+    )
+    batched = CoconutModel(
+        batched_base, encoder.token_ids.latent, implementation="batched"
+    )
+
+    reference_output = reference(**batch)
+    batched_output = batched(**batch)
+
+    relevant = batch["attention_mask"].bool()
+    torch.testing.assert_close(
+        batched_output.logits[relevant], reference_output.logits[relevant]
+    )
+    torch.testing.assert_close(batched_output.loss, reference_output.loss)
+    assert reference_base.forward_calls == 2
+    assert batched_base.forward_calls == 1

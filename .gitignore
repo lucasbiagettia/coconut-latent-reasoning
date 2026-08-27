@@ -170,3 +170,8 @@ checkpoints/
 # Datasets
 data/raw
 data/processed
+data/prosqa_official/
+data/experiments/
+
+# Local experiment artifacts
+outputs/

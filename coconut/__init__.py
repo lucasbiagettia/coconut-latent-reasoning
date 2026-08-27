@@ -8,7 +8,13 @@ from .curriculum import (
     EncodedReasoningExample,
     apply_curriculum,
 )
-from .data import JsonReasoningDatasetAdapter, ReasoningDatasetAdapter, ReasoningExample
+from .data import (
+    ColumnMapping,
+    HuggingFaceDatasetAdapter,
+    JsonReasoningDatasetAdapter,
+    ReasoningDatasetAdapter,
+    ReasoningExample,
+)
 
 __all__ = [
     "BOT_TOKEN",
@@ -16,6 +22,8 @@ __all__ = [
     "LATENT_TOKEN",
     "CurriculumEncoder",
     "EncodedReasoningExample",
+    "ColumnMapping",
+    "HuggingFaceDatasetAdapter",
     "JsonReasoningDatasetAdapter",
     "ReasoningDatasetAdapter",
     "ReasoningExample",

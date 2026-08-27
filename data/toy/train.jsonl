@@ -1,0 +1,12 @@
+{"question":"What is 2 plus 3?","steps":["Start with 2.","Add 3 to get 5."],"answer":"5"}
+{"question":"What is 7 minus 4?","steps":["Start with 7.","Subtract 4 to get 3."],"answer":"3"}
+{"question":"What is 3 times 4?","steps":["Take four groups of 3.","The total is 12."],"answer":"12"}
+{"question":"What is 12 divided by 3?","steps":["Split 12 into three equal groups.","Each group contains 4."],"answer":"4"}
+{"question":"What is 5 plus 6?","steps":["Start with 5.","Add 6 to get 11."],"answer":"11"}
+{"question":"What is 9 minus 2?","steps":["Start with 9.","Subtract 2 to get 7."],"answer":"7"}
+{"question":"What is 5 times 3?","steps":["Take three groups of 5.","The total is 15."],"answer":"15"}
+{"question":"What is 16 divided by 4?","steps":["Split 16 into four equal groups.","Each group contains 4."],"answer":"4"}
+{"question":"What is 8 plus 7?","steps":["Start with 8.","Add 7 to get 15."],"answer":"15"}
+{"question":"What is 10 minus 6?","steps":["Start with 10.","Subtract 6 to get 4."],"answer":"4"}
+{"question":"What is 2 times 8?","steps":["Take eight groups of 2.","The total is 16."],"answer":"16"}
+{"question":"What is 18 divided by 6?","steps":["Split 18 into six equal groups.","Each group contains 3."],"answer":"3"}

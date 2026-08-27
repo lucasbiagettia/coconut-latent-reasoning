@@ -1,181 +1,141 @@
+# Coconut latent reasoning
 
-# **Coconut Latent Reasoning: Training Large Language Models to Reason in a Continuous Latent Space**
+This repository is a small, correctness-first implementation of **Coconut
+(Chain of Continuous Thought)** from *Training Large Language Models to Reason
+in a Continuous Latent Space*. The included [paper](coconutPaper.md), not the
+previous prototype, is the source of truth.
 
-This repository implements the **Coconut** model, introduced in the paper *"Training Large Language Models to Reason in a Continuous Latent Space"* by **Shibo Hao et al.**. Coconut combines **language mode** and **latent mode** to address complex reasoning tasks, using continuous latent states for enhanced reasoning efficiency and flexibility.
+## How it works
 
----
+For a training example with a question, reasoning steps `R1..Rn`, and an
+answer, Stage 0 trains ordinary language chain-of-thought. At Stage `k`, the
+first `min(k, n)` text steps disappear and each removed step is replaced by
+`c` continuous thoughts:
 
-## **Motivation**
-
-The Coconut model introduces:
-1. **Latent Mode**: A continuous representation that reuses hidden states to perform reasoning without relying on language.
-2. **Multi-Stage Curriculum**: A training approach that gradually replaces reasoning steps in language with latent thoughts.
-
-This implementation evaluates the model on the following reasoning datasets:
-- **GSM8k**: Mathematical reasoning.
-- **ProntoQA**: Logical reasoning with multi-step processes.
-- **ProsQA**: Logical problems based on directed acyclic graphs (DAGs).
-
----
-
-## **Project Structure**
-
-```plaintext
-coconut-latent-reasoning/
-│
-├── data/                           # Data handling
-│   ├── raw/                        # Original datasets (downloaded or generated)
-│   │   ├── gsm8k/                  # GSM8k data in JSON format
-│   │   ├── prontoqa/               # ProntoQA generated data
-│   │   └── prosqa/                 # ProsQA generated data
-│   ├── processed/                  # Preprocessed data in PyTorch format (.pt)
-│   ├── preprocess_datasets.py      # Script to download, generate, and preprocess datasets
-│   ├── generate_prontoqa.py        # ProntoQA data generator
-│   └── generate_prosqa.py          # ProsQA data generator
-│
-├── model/                          # Coconut model definition
-│   ├── model.py                    # GPT-2 with latent mode integration
-│   ├── latent_layer.py             # Latent mode implementation
-│   └── tokenizer.py                # Tokenizer with special tokens
-│
-├── training/                       # Training logic
-│   ├── curriculum_trainer.py       # Multi-stage curriculum implementation
-│   └── config.yaml                 # Hyperparameter configuration
-│
-├── inference/                      # Inference and evaluation
-│   └── inference.py                # Script for inference in latent and language modes
-│
-├── tests/                          # Testing scripts
-│   └── test_inference.py           # Basic inference test
-│
-├── checkpoints/                    # Saved models during training
-│
-└── README.md                       # Project documentation
+```text
+Stage 0: Question <bot> <eot> R1 R2 R3 Answer
+Stage 1: Question <bot> H1 <eot> R2 R3 Answer
+Stage 2: Question <bot> H1 H2 <eot> R3 Answer
+Stage 3: Question <bot> H1 H2 H3 <eot> Answer
 ```
 
----
+`H1`, `H2`, ... are not vocabulary tokens. For every latent position, the
+model runs on the prefix and its final-layer hidden state is inserted directly
+as the next input embedding. It never passes through the LM head. The next
+latent forward consumes that inserted state, and the graph is kept intact so
+the final causal language loss backpropagates through the complete latent
+chain.
 
-## **Installation**
+The implementation inserts `<bot>` and `<eot>` in every stage, including the
+zero-latent Stage 0, matching the paper authors' released training
+representation. Question, boundary, latent, and padding labels are `-100`;
+loss starts with the first remaining reasoning/answer token and uses the
+standard one-token causal shift. The optimizer is recreated at each curriculum
+stage.
 
-### **Requirements**
-- Python >= 3.9
-- PyTorch >= 2.0
-- Transformers
-- Datasets
-- NetworkX (for ProsQA)
+The core code is intentionally small:
 
-### **Install Dependencies**
+- [data.py](coconut/data.py): dataset-neutral examples and JSON adapter.
+- [curriculum.py](coconut/curriculum.py): stages, tokenization, masking, padding.
+- [model.py](coconut/model.py): hidden-state feedback and greedy inference.
+- [training.py](coconut/training.py): single-process CPU/CUDA trainer.
+
+## Dataset format
+
+Both JSON arrays and JSONL are supported. Every record must use separated
+reasoning steps:
+
+```json
+{
+  "question": "What is 2 plus 3?",
+  "steps": ["Start with 2.", "Add 3 to get 5."],
+  "answer": "5"
+}
+```
+
+`ReasoningExample` stores `steps` as `list[str]`. Dataset integrations only
+need to implement:
+
+```python
+class ReasoningDatasetAdapter(Protocol):
+    def load_split(self, split: str) -> Sequence[ReasoningExample]: ...
+```
+
+No generated data in this repository is presented as GSM8K, ProntoQA, or
+ProsQA. `data/toy/` is explicitly a tiny arithmetic smoke dataset.
+
+## Install and test
+
+Use a supported Python version (3.10-3.12 is recommended):
 
 ```bash
-pip install torch transformers datasets networkx pyyaml tqdm
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+pytest -q
 ```
 
----
+The unit tests use a tiny in-memory causal model, so they need no model download
+or GPU. They verify step preservation, stages, `c`, direct hidden-state reuse,
+the dependency of `H2` on `H1`, causal shifting, prompt/latent and padding
+masking, backward through latent reasoning, and Stage 0.
 
-## **Usage**
-
-### **1. Download, Generate, and Preprocess Data**
-
-Run the following script to download **GSM8k**, generate **ProntoQA** and **ProsQA**, and preprocess all datasets:
+## CPU smoke test
 
 ```bash
-python data/preprocess_datasets.py
+python train.py --config configs/cpu_smoke.yaml
 ```
 
-This will generate preprocessed data in the `data/processed/` directory.
+This uses `EleutherAI/pythia-14m`, the smallest Pythia checkpoint, and a
+12-example toy dataset. It deliberately runs only one train and validation
+batch at Stage 0 and Stage 1. The command exercises model/tokenizer loading,
+JSONL loading, tokenization, normal CoT, latent reasoning, forward, backward,
+an optimizer step, checkpoints, validation loss, and fixed-length latent
+inference. It tests plumbing, not task accuracy. Remove the two
+`max_*_batches` limits and raise the epoch count to try overfitting the toy set.
 
----
+## Change the model
 
-### **2. Train the Model**
+The model is loaded through `AutoModelForCausalLM` and embeddings through
+`get_input_embeddings()`. Change only `model_id` in YAML, for example:
 
-Train the Coconut model using the multi-stage curriculum:
+```yaml
+model_id: EleutherAI/pythia-1.4b
+```
+
+or:
+
+```yaml
+model_id: Qwen/Qwen3-1.7B-Base
+```
+
+Then choose `device: cuda` and tune batch size/gradient accumulation. See
+`configs/example_gpu.yaml`. A compatible decoder-only model must accept
+`inputs_embeds` and expose its final hidden states.
+
+To run a saved checkpoint:
 
 ```bash
-python main.py
+python infer.py \
+  --checkpoint checkpoints/cpu_smoke/stage_1_epoch_1.pt \
+  --question "What is 2 plus 3?" \
+  --latent-thoughts 1
 ```
 
-This script:
-- Trains the model in both language and latent modes.
-- Saves checkpoints to the `checkpoints/` directory.
-- Validates the model at the end of each stage.
+## Deliberate scope choices
 
----
+- Inference uses the paper's simple fixed number of latent thoughts and inserts
+  `<eot>` at that known position. The optional learned termination classifier
+  is not implemented.
+- Every latent thought recomputes its full prefix. There is no KV cache, DDP,
+  FSDP, DeepSpeed, or experiment tracking.
+- Training uses fp32 on CPU and CUDA. Mixed precision is intentionally deferred
+  until it can include the necessary gradient scaling and stability checks.
+- Batches are padded for data loading, but examples are evaluated independently
+  inside the wrapper. This keeps variable latent locations unambiguous at the
+  cost of throughput.
+- The repository implements the method and pipeline, not the paper's full
+  benchmark datasets, training budget, or reported accuracy reproduction.
 
-### **3. Inference**
-
-Run inference in **latent** or **language** modes using `inference.py`:
-
-```bash
-python tests/test_inference.py
-```
-
-Example output:
-```plaintext
-Latent Mode: The result is 4.
-Language Mode: Step 1: Add 2 to 2. Step 2: The result is 4.
-```
-
----
-
-### **4. Generate Synthetic Data**
-
-Manually generate ProntoQA and ProsQA datasets:
-
-- **ProntoQA**:
-   ```bash
-   python data/generate_prontoqa.py
-   ```
-
-- **ProsQA**:
-   ```bash
-   python data/generate_prosqa.py
-   ```
-
----
-
-## **Results**
-
-The Coconut model is evaluated and compared against:
-1. **CoT (Chain of Thought)**: Explicit reasoning in language.
-2. **No-CoT**: Direct answers without reasoning.
-
-Key metrics include:
-- **Accuracy**: Precision of the generated answers.
-- **Efficiency**: Number of tokens generated.
-
----
-
-## **Citation**
-
-If you use this work, please cite the following paper:
-
-**Training Large Language Models to Reason in a Continuous Latent Space**  
-*Shibo Hao, Sainbayar Sukhbaatar, DiJia Su, Xian Li, Zhiting Hu, Jason Weston, Yuandong Tian.*  
-FAIR at Meta, UC San Diego.  
-[arXiv preprint arXiv:2412.06769](https://arxiv.org/abs/2412.06769)
-
----
-
-## **Contributing**
-
-To contribute to this project:
-1. Fork the repository.
-2. Create a new branch:
-   ```bash
-   git checkout -b feature/new-feature
-   ```
-3. Submit a Pull Request with your changes.
-
----
-
-## **License**
-
-This project is licensed under the **MIT License**.
-
----
-
-## **Contact**
-
-For questions or suggestions, please contact:
-- **Developer**: [Your Name]
-- **Email**: [youremail@example.com]
+These choices simplify computation without changing the continuous-thought
+semantics or gradient path.

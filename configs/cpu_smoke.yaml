@@ -1,0 +1,23 @@
+# One batch per stage is enough to verify the complete CPU pipeline.
+model_id: EleutherAI/pythia-14m
+train_path: data/toy/train.jsonl
+validation_path: data/toy/validation.jsonl
+checkpoint_dir: checkpoints/cpu_smoke
+device: cpu
+
+batch_size: 2
+learning_rate: 0.0001
+weight_decay: 0.0
+gradient_accumulation_steps: 1
+
+# Stage 0 is ordinary language CoT; Stage 1 replaces R1 with c hidden states.
+max_latent_stage: 1
+c: 1
+epochs_per_stage: 1
+
+max_length: 128
+max_train_batches: 1
+max_validation_batches: 1
+inference_max_new_tokens: 4
+seed: 42
+local_files_only: false

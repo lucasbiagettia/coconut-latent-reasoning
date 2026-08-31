@@ -8,13 +8,57 @@ from typing import Any
 
 import yaml
 
+from .data import ColumnMapping
+
+
+@dataclass(frozen=True)
+class DataConfig:
+    type: str
+    train_split: str = "train"
+    validation_split: str = "validation"
+    test_split: str = "test"
+    train_path: str | None = None
+    validation_path: str | None = None
+    dataset_id: str | None = None
+    config_name: str | None = None
+    revision: str | None = None
+    selection_metadata_path: str | None = None
+    columns: ColumnMapping = ColumnMapping()
+
+    @classmethod
+    def from_mapping(cls, values: dict[str, Any]) -> "DataConfig":
+        raw = dict(values)
+        columns = raw.pop("columns", {})
+        if not isinstance(columns, dict):
+            raise ValueError("data.columns must be a mapping")
+        config = cls(columns=ColumnMapping(**columns), **raw)
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        if self.type not in {"json", "huggingface", "entailmentbank"}:
+            raise ValueError(
+                "data.type must be 'json', 'huggingface', or 'entailmentbank'"
+            )
+        if not self.train_split or not self.validation_split or not self.test_split:
+            raise ValueError("data split names cannot be empty")
+        if self.type == "json" and (not self.train_path or not self.validation_path):
+            raise ValueError("JSON data requires train_path and validation_path")
+        if self.type in {"huggingface", "entailmentbank"} and not self.dataset_id:
+            raise ValueError("Hugging Face data requires dataset_id")
+        if self.type == "entailmentbank" and not self.selection_metadata_path:
+            raise ValueError("EntailmentBank data requires selection_metadata_path")
+        if self.type == "entailmentbank" and not self.config_name:
+            raise ValueError("EntailmentBank data requires config_name")
+
 
 @dataclass(frozen=True)
 class TrainingConfig:
     model_id: str
-    train_path: str
-    validation_path: str
+    data: DataConfig
     checkpoint_dir: str = "checkpoints"
+    output_dir: str | None = None
+    resume_from_checkpoint: str | None = None
     device: str = "auto"
     batch_size: int = 1
     learning_rate: float = 1e-4
@@ -29,6 +73,19 @@ class TrainingConfig:
     inference_max_new_tokens: int = 16
     seed: int = 42
     local_files_only: bool = False
+    implementation: str = "reference"
+    gradient_checkpointing: bool = False
+    precision: str = "fp32"
+    optimizer: str = "adamw"
+    optimizer_eps: float = 1e-8
+    eval_every_epochs: int = 1
+    checkpoint_every_epochs: int = 1
+    accuracy_max_examples: int = 0
+    qualitative_examples: int = 0
+    qualitative_every_epochs: int = 1
+    early_stopping_patience: int | None = None
+    early_stopping_min_delta: float = 0.0
+    restore_best_stage_checkpoint: bool = False
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "TrainingConfig":
@@ -38,6 +95,10 @@ class TrainingConfig:
         if not isinstance(raw, dict):
             raise ValueError(f"Configuration must be a YAML mapping: {config_path}")
         values: dict[str, Any] = dict(raw)
+        data = values.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("Configuration requires a data mapping")
+        values["data"] = DataConfig.from_mapping(data)
         if isinstance(values.get("epochs_per_stage"), list):
             values["epochs_per_stage"] = tuple(values["epochs_per_stage"])
         config = cls(**values)
@@ -51,6 +112,10 @@ class TrainingConfig:
             "c": self.c,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "inference_max_new_tokens": self.inference_max_new_tokens,
+            "eval_every_epochs": self.eval_every_epochs,
+            "checkpoint_every_epochs": self.checkpoint_every_epochs,
+            "qualitative_every_epochs": self.qualitative_every_epochs,
+            "optimizer_eps": self.optimizer_eps,
         }
         for name, value in positive.items():
             if value <= 0:
@@ -59,6 +124,21 @@ class TrainingConfig:
             raise ValueError("max_latent_stage must be >= 0")
         if self.weight_decay < 0:
             raise ValueError("weight_decay must be >= 0")
+        if self.implementation not in {"reference", "batched"}:
+            raise ValueError("implementation must be 'reference' or 'batched'")
+        if self.precision not in {"fp32", "fp16"}:
+            raise ValueError("precision must be 'fp32' or 'fp16'")
+        if self.optimizer not in {"adamw", "adamw8bit"}:
+            raise ValueError("optimizer must be 'adamw' or 'adamw8bit'")
+        if self.accuracy_max_examples < 0 or self.qualitative_examples < 0:
+            raise ValueError("accuracy/qualitative example counts must be >= 0")
+        if (
+            self.early_stopping_patience is not None
+            and self.early_stopping_patience < 1
+        ):
+            raise ValueError("early_stopping_patience must be >= 1 or null")
+        if self.early_stopping_min_delta < 0:
+            raise ValueError("early_stopping_min_delta must be >= 0")
         if self.max_length is not None and self.max_length < 2:
             raise ValueError("max_length must be >= 2")
         if isinstance(self.epochs_per_stage, int):
@@ -81,3 +161,7 @@ class TrainingConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def effective_batch_size(self) -> int:
+        return self.batch_size * self.gradient_accumulation_steps

@@ -35,7 +35,7 @@ stage.
 
 The core code is intentionally small:
 
-- [data.py](coconut/data.py): dataset-neutral examples and JSON adapter.
+- [data.py](coconut/data.py): dataset-neutral JSON/JSONL and Hugging Face adapters.
 - [curriculum.py](coconut/curriculum.py): stages, tokenization, masking, padding.
 - [model.py](coconut/model.py): hidden-state feedback and greedy inference.
 - [training.py](coconut/training.py): single-process CPU/CUDA trainer.
@@ -64,6 +64,52 @@ class ReasoningDatasetAdapter(Protocol):
 No generated data in this repository is presented as GSM8K, ProntoQA, or
 ProsQA. `data/toy/` is explicitly a tiny arithmetic smoke dataset.
 
+For JSON/JSONL—including the official ProsQA JSON files distributed by the
+Coconut repository—configure paths directly:
+
+```yaml
+data:
+  type: json
+  train_path: path/to/train.json
+  validation_path: path/to/validation.json
+  train_split: train
+  validation_split: validation
+  columns:
+    question: question
+    steps: steps
+    answer: answer
+```
+
+For a dataset loadable by `datasets.load_dataset`, use:
+
+```yaml
+data:
+  type: huggingface
+  dataset_id: owner/dataset-name
+  config_name: null
+  train_split: train
+  validation_split: validation
+  columns:
+    question: question_column
+    steps: reasoning_steps_column
+    answer: answer_column
+```
+
+The adapter only maps and validates columns. Dataset-specific transformations
+belong outside Coconut so the model never depends on a particular benchmark.
+
+Hugging Face authentication is optional. Put a token in a local `.env` when a
+private resource or higher Hub rate limits require it:
+
+```dotenv
+HF_TOKEN=hf_...
+```
+
+`.env` is ignored by Git. The repository's small dotenv reader only reads
+`HF_TOKEN`; an already exported environment variable takes precedence. The
+token is passed to `load_dataset`, `AutoTokenizer`, and `AutoModelForCausalLM`
+but is never printed. Public datasets and models continue to work without it.
+
 ## Install and test
 
 Use a supported Python version (3.10-3.12 is recommended):
@@ -75,10 +121,13 @@ python -m pip install -r requirements.txt
 pytest -q
 ```
 
-The unit tests use a tiny in-memory causal model, so they need no model download
-or GPU. They verify step preservation, stages, `c`, direct hidden-state reuse,
+The unit tests use tiny randomly initialized models, including a real GPTNeoX
+transformer, so they need no model download or GPU. They verify step
+preservation, stages, `c`, direct hidden-state reuse,
 the dependency of `H2` on `H1`, causal shifting, prompt/latent and padding
-masking, backward through latent reasoning, and Stage 0.
+masking, backward through latent reasoning, and Stage 0. They also compare the
+reference and batched implementations with identical weights and heterogeneous
+examples, including relevant logits, loss, and every parameter gradient.
 
 ## CPU smoke test
 
@@ -93,6 +142,248 @@ JSONL loading, tokenization, normal CoT, latent reasoning, forward, backward,
 an optimizer step, checkpoints, validation loss, and fixed-length latent
 inference. It tests plumbing, not task accuracy. Remove the two
 `max_*_batches` limits and raise the epoch count to try overfitting the toy set.
+
+## Local ProsQA experiment on a 3 GiB GPU
+
+The first local experiment uses official ProsQA data and
+`EleutherAI/pythia-70m`. Run:
+
+```bash
+bash scripts/run_local_experiment.sh
+```
+
+The script downloads `prosqa_train.json` and `prosqa_valid.json` from the
+[official Coconut repository](https://github.com/facebookresearch/coconut/tree/main/data),
+pins commit `27273cb8cca4bb763c041a63b036d0c3b7cbbb48`, verifies both SHA-256
+hashes, and samples train and validation independently. It selects 300 train
+and 50 validation examples with seed 42. To fit the memory target without
+truncating reasoning, only official examples whose complete curriculum fits in
+384 Pythia tokens are eligible. Source indices, lengths, hashes, and sampling
+parameters are recorded in `data/experiments/prosqa300/subset_metadata.json`.
+
+The experiment uses:
+
+```yaml
+implementation: batched
+batch_size: 1
+gradient_accumulation_steps: 16
+gradient_checkpointing: true
+max_length: 384
+```
+
+`batch_size` is the actual GPU microbatch; accumulation gives an effective
+batch size of 16. Each epoch prints stage, losses, exact match on a fixed
+20-example validation subset, learning rate, elapsed time, and allocated/peak
+CUDA memory. Three fixed validation generations are also printed. Metrics are
+written after every epoch.
+
+Do not confuse the ignored legacy `data/raw/prosqa/` artifact with the official
+dataset. The preparation script uses its own verified `data/prosqa_official/`
+directory.
+
+After successful completion, the self-contained result is:
+
+```text
+outputs/pythia70m_prosqa300/
+├── model/                    # Hugging Face config + trained safetensors
+├── tokenizer/                # tokenizer and Coconut special tokens
+├── checkpoints/latest.pt     # model + optimizer + history for resume
+├── coconut_config.json       # final stage and latent-thought count
+├── training_config.json
+└── training_history.json
+```
+
+Resume from the last completed epoch with:
+
+```bash
+python train.py \
+  --config configs/local_pythia70m_prosqa300.yaml \
+  --resume-from outputs/pythia70m_prosqa300/checkpoints/latest.pt
+```
+
+Ask one question after training:
+
+```bash
+python scripts/ask_model.py \
+  --model-dir outputs/pythia70m_prosqa300 \
+  --question "Every ... Is Tom a lempus or scrompus?"
+```
+
+Or omit `--question` for an interactive loop. The script loads the model only
+from that output directory and automatically applies the saved number of
+continuous thoughts.
+
+Three GiB remains a tight budget because Coconut retains a differentiable graph
+through several sequential prefix forwards. If CUDA reports OOM, `batch_size`
+is already at its minimum; first lower `max_length` to 352 in both the
+experiment config and `run_local_experiment.sh`, and lower the script's
+`--validation-size` to 40. If necessary, use length 320 with validation size 16.
+Rerunning preparation selects a shorter official pool rather than truncating
+examples. Do not lower `gradient_accumulation_steps` expecting lower peak
+VRAM—it changes effective batch size, not microbatch memory.
+
+## EntailmentBank experiment (recommended for 3 GiB)
+
+This experiment loads the real
+[`sxiong/entailmentbank`](https://huggingface.co/datasets/sxiong/entailmentbank)
+dataset directly with `load_dataset(..., "task1")`. It does not create a
+synthetic dataset and does not copy the Hub rows. The preparation step writes
+only selected IDs, source indices, proof metadata, and token lengths to
+`data/experiments/entailmentbank500/selection_metadata.json`.
+
+On a GTX 1050 with 3 GiB, run the 70M configuration:
+
+```bash
+COCONUT_PYTHON=.venv/bin/python bash scripts/run_entailmentbank_experiment.sh
+```
+
+The default is deliberately Pythia-70M. Full fp32 AdamW fine-tuning of 160M
+needs roughly 2.6 GB for parameters, gradients, and two optimizer moments
+alone, before CUDA context and activations, so it is not a reasonable 3 GiB
+target with the current correctness-first trainer. A matching 160M config is
+available for a larger GPU:
+
+```bash
+COCONUT_PYTHON=.venv/bin/python COCONUT_MODEL_SIZE=160m \
+  bash scripts/run_entailmentbank_experiment.sh
+```
+
+Both configurations use `implementation: batched`, `batch_size: 1`,
+`gradient_checkpointing: true`, `c: 1`, accumulation over 16 microbatches,
+and a 256-token limit. The selector independently samples 500 train and 100
+validation IDs with seed 42 from their original splits. Every selected example
+has gold proof depth 1–4, one to four proof inferences, and fits in full at
+every curriculum stage. Nothing is truncated. The maximum parsed gold proof
+length determines the five stages 0–4, and Stage 4 therefore removes all
+textual proof conclusions from every selected example.
+
+`EntailmentBankAdapter` builds the model input as:
+
+```text
+Context: <the row's complete context>
+Question: <the row's question>
+```
+
+It splits the structured `proof` at inference boundaries in their gold order.
+For `-> intN: conclusion`, it takes the literal conclusion and verifies it
+against `meta.intermediate_conclusions`. For the terminal `-> hypothesis`, it
+resolves `meta.hypothesis_id` to that same metadata dictionary. Every result is
+also required to occur in `full_text_proof`, and the number of parsed steps
+must equal `length_of_proof`. Thus `steps` contains every actual gold inference
+conclusion—including the terminal entailed hypothesis before the separate
+dataset `answer`—without LLM rewriting or invented text.
+
+Each epoch prints train/validation loss, answer exact match overall and grouped
+by `depth_of_proof`, elapsed time, and CUDA memory. It also prints three fixed
+validation questions with expected and predicted answers. The result directory
+contains the model, tokenizer, Coconut config, training config/history,
+resumable checkpoint, and a copy of the ID-selection metadata:
+
+```text
+outputs/pythia70m_entailmentbank500/
+├── model/
+├── tokenizer/
+├── checkpoints/latest.pt
+├── coconut_config.json
+├── experiment_metadata.json
+├── training_config.json
+└── training_history.json
+```
+
+Resume with:
+
+```bash
+.venv/bin/python train.py \
+  --config configs/local_pythia70m_entailmentbank500.yaml \
+  --resume-from outputs/pythia70m_entailmentbank500/checkpoints/latest.pt
+```
+
+At inference time supply the factual context alongside the question:
+
+```bash
+.venv/bin/python scripts/ask_model.py \
+  --model-dir outputs/pythia70m_entailmentbank500 \
+  --context "sent1: ... sent2: ..." \
+  --question "Which statement follows from these facts?"
+```
+
+## Full EntailmentBank Pythia-410M experiment
+
+Install the optional GPU optimizer once:
+
+```bash
+.venv/bin/python -m pip install -r requirements-gpu.txt
+```
+
+The serious run uses every Task 1 row whose complete context, question, gold
+proof conclusions, and answer fit at every curriculum stage with
+`max_length: 256`. It keeps the original train/validation/test split boundary,
+never evaluates test during training, and records every retained `(split,
+source_index, id)` without copying dataset text. Preparation currently yields
+1,219 train, 168 validation, and 312 held-out test rows. Train proof lengths
+derive stages 0–10.
+
+The 410M configuration uses full-model fp16 training with dynamic loss scaling,
+AdamW 8-bit optimizer states, gradient checkpointing, dynamic right-padding,
+microbatch 1, and accumulation over 16 microbatches. No layer is frozen and no
+LoRA, QLoRA, model quantization, or CPU offload is used. Stage 0 runs for five
+epochs and stages 1–10 run for three each.
+
+Always test the exact GPU first:
+
+```bash
+COCONUT_PYTHON=.venv/bin/python \
+  bash scripts/run_entailmentbank_410m.sh --memory-test-only
+```
+
+Without `--memory-test-only`, the same script begins training only after Stage
+0 and Stage 10 each complete a real forward, backward, and optimizer step:
+
+```bash
+COCONUT_PYTHON=.venv/bin/python bash scripts/run_entailmentbank_410m.sh
+```
+
+If the 410M memory test fails, run the identical 160M experiment explicitly:
+
+```bash
+COCONUT_PYTHON=.venv/bin/python COCONUT_MODEL_SIZE=160m \
+  bash scripts/run_entailmentbank_410m.sh
+```
+
+`checkpoints/latest.pt` is resumable, `checkpoints/final.pt` is the terminal
+checkpoint, and `checkpoints/best.pt` is selected only by validation loss.
+The final model is at the output root; `best/` is also a complete
+`scripts/ask_model.py` model directory with the correct stage-specific latent
+count.
+
+## Controlled Pythia-160M run
+
+The controlled 160M experiment explicitly limits the curriculum to Stage 0–4.
+Within every stage it evaluates validation each epoch, stores
+`checkpoints/stage_N_best.pt` by minimum validation loss, stops after one
+non-improving validation epoch (`min_delta: 0.001`), and restores that stage
+checkpoint before constructing the next stage optimizer. Test remains listed
+only in preparation metadata and is never loaded by the trainer.
+
+The launcher first tests gradient checkpointing OFF with microbatch 2 and
+accumulation 8. If and only if that attempt returns CUDA OOM, it tests the safe
+microbatch 1 / accumulation 16 config. Both keep effective batch size 16:
+
+```bash
+COCONUT_PYTHON=.venv/bin/python \
+  bash scripts/run_entailmentbank_160m_controlled.sh --memory-test-only
+```
+
+Run training after the same automatic memory gate with:
+
+```bash
+COCONUT_PYTHON=.venv/bin/python \
+  bash scripts/run_entailmentbank_160m_controlled.sh
+```
+
+Startup logs report checkpointing, microbatch, accumulation, and effective
+batch size. Every stage transition reports `best_stage_validation_loss` and
+the exact `restored_checkpoint` path.
 
 ## Change the model
 
@@ -113,6 +404,40 @@ Then choose `device: cuda` and tune batch size/gradient accumulation. See
 `configs/example_gpu.yaml`. A compatible decoder-only model must accept
 `inputs_embeds` and expose its final hidden states.
 
+## Reference and batched forwards
+
+Select the implementation in YAML:
+
+```yaml
+implementation: reference  # per-example oracle used by the CPU smoke test
+```
+
+or:
+
+```yaml
+implementation: batched    # used by configs/example_gpu.yaml
+```
+
+The batched path groups examples by latent count. At every step it masks each
+row after its current prefix and gathers the hidden state from that row's own
+latent position, so question lengths and latent positions may differ. It then
+computes `H1` for the compatible group, followed by `H2`, and so on. The latent
+chain remains sequential, but each step uses real batch parallelism. Examples
+with incompatible latent counts are evaluated in separate groups.
+
+`batch_size` is the actual microbatch passed into this grouped forward;
+`gradient_accumulation_steps` controls how many microbatches contribute to one
+optimizer update:
+
+```yaml
+batch_size: 4
+gradient_accumulation_steps: 8
+```
+
+With one process this corresponds to an effective batch size of 32 examples.
+Increase `batch_size` until GPU memory is comfortably utilized, then use
+gradient accumulation to reach the desired effective batch size.
+
 To run a saved checkpoint:
 
 ```bash
@@ -131,9 +456,8 @@ python infer.py \
   FSDP, DeepSpeed, or experiment tracking.
 - Training uses fp32 on CPU and CUDA. Mixed precision is intentionally deferred
   until it can include the necessary gradient scaling and stability checks.
-- Batches are padded for data loading, but examples are evaluated independently
-  inside the wrapper. This keeps variable latent locations unambiguous at the
-  cost of throughput.
+- `reference` remains intentionally per-example. `batched` groups compatible
+  layouts without changing latent-thought semantics.
 - The repository implements the method and pipeline, not the paper's full
   benchmark datasets, training budget, or reported accuracy reproduction.
 

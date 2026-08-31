@@ -1,8 +1,18 @@
 model_id: EleutherAI/pythia-1.4b
-train_path: data/toy/train.jsonl
-validation_path: data/toy/validation.jsonl
 checkpoint_dir: checkpoints/pythia_1_4b
 device: cuda
+implementation: batched
+
+data:
+  type: json
+  train_path: data/toy/train.jsonl
+  validation_path: data/toy/validation.jsonl
+  train_split: train
+  validation_split: validation
+  columns:
+    question: question
+    steps: steps
+    answer: answer
 
 batch_size: 2
 learning_rate: 0.0001

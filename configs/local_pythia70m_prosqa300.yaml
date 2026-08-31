@@ -1,0 +1,40 @@
+model_id: EleutherAI/pythia-70m
+output_dir: outputs/pythia70m_prosqa300
+device: cuda
+implementation: batched
+gradient_checkpointing: true
+
+data:
+  type: json
+  train_path: data/experiments/prosqa300/train.json
+  validation_path: data/experiments/prosqa300/validation.json
+  train_split: train
+  validation_split: validation
+  columns:
+    question: question
+    steps: steps
+    answer: answer
+
+# Conservative for ~3 GiB VRAM. This is a true parallel microbatch of one;
+# raise it only after observing peak memory from a successful epoch.
+batch_size: 1
+gradient_accumulation_steps: 16
+learning_rate: 0.0001
+weight_decay: 0.01
+
+# Official ProsQA chains contain 3-6 steps. Two epochs per stage make this a
+# useful first run without approaching the paper's much larger training budget.
+max_latent_stage: 6
+c: 1
+epochs_per_stage: [2, 2, 2, 2, 2, 2, 2]
+max_length: 384
+
+eval_every_epochs: 1
+checkpoint_every_epochs: 1
+accuracy_max_examples: 20
+qualitative_examples: 3
+qualitative_every_epochs: 1
+inference_max_new_tokens: 96
+
+seed: 42
+local_files_only: false

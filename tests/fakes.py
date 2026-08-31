@@ -69,11 +69,13 @@ class TinyCausalLM(nn.Module):
         *,
         inputs_embeds: torch.Tensor,
         attention_mask: torch.Tensor,
+        position_ids: torch.Tensor | None = None,
         output_hidden_states: bool,
         use_cache: bool,
         return_dict: bool,
     ) -> SimpleNamespace:
-        del attention_mask, output_hidden_states, use_cache, return_dict
+        del position_ids, output_hidden_states, use_cache, return_dict
         self.forward_calls += 1
-        hidden = torch.cumsum(inputs_embeds, dim=1)
+        masked_embeds = inputs_embeds * attention_mask.unsqueeze(-1)
+        hidden = torch.cumsum(masked_embeds, dim=1)
         return SimpleNamespace(logits=self.lm_head(hidden), hidden_states=(hidden,))

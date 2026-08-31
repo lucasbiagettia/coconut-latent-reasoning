@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+import torch
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -23,6 +25,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--question")
+    parser.add_argument(
+        "--context",
+        help="Optional factual context prepended to --question (for EntailmentBank)",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--max-new-tokens", type=int)
     parser.add_argument("--show-raw", action="store_true")
@@ -41,7 +47,11 @@ def main() -> None:
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir / "tokenizer")
     token_ids = add_coconut_tokens(tokenizer)
-    base_model = AutoModelForCausalLM.from_pretrained(args.model_dir / "model").float()
+    precision = metadata.get("precision", "fp32")
+    dtype = torch.float16 if device.type == "cuda" and precision == "fp16" else torch.float32
+    base_model = AutoModelForCausalLM.from_pretrained(
+        args.model_dir / "model", dtype=dtype
+    )
     base_model.resize_token_embeddings(len(tokenizer))
     model = CoconutModel(
         base_model,
@@ -59,7 +69,7 @@ def main() -> None:
 
     if args.question is not None:
         _answer(
-            args.question,
+            _with_context(args.question, args.context),
             model,
             tokenizer,
             encoder,
@@ -79,7 +89,7 @@ def main() -> None:
         if not question:
             return
         _answer(
-            question,
+            _with_context(question, args.context),
             model,
             tokenizer,
             encoder,
@@ -88,6 +98,12 @@ def main() -> None:
             device,
             args.show_raw,
         )
+
+
+def _with_context(question: str, context: str | None) -> str:
+    if context is None or not context.strip():
+        return question
+    return f"Context: {context.strip()}\nQuestion: {question.strip()}"
 
 
 def _answer(

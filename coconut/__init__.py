@@ -10,10 +10,13 @@ from .curriculum import (
 )
 from .data import (
     ColumnMapping,
+    EntailmentBankAdapter,
+    EntailmentBankRecord,
     HuggingFaceDatasetAdapter,
     JsonReasoningDatasetAdapter,
     ReasoningDatasetAdapter,
     ReasoningExample,
+    parse_entailmentbank_record,
 )
 
 __all__ = [
@@ -23,9 +26,12 @@ __all__ = [
     "CurriculumEncoder",
     "EncodedReasoningExample",
     "ColumnMapping",
+    "EntailmentBankAdapter",
+    "EntailmentBankRecord",
     "HuggingFaceDatasetAdapter",
     "JsonReasoningDatasetAdapter",
     "ReasoningDatasetAdapter",
     "ReasoningExample",
+    "parse_entailmentbank_record",
     "apply_curriculum",
 ]

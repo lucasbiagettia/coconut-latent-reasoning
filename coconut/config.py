@@ -16,10 +16,13 @@ class DataConfig:
     type: str
     train_split: str = "train"
     validation_split: str = "validation"
+    test_split: str = "test"
     train_path: str | None = None
     validation_path: str | None = None
     dataset_id: str | None = None
     config_name: str | None = None
+    revision: str | None = None
+    selection_metadata_path: str | None = None
     columns: ColumnMapping = ColumnMapping()
 
     @classmethod
@@ -33,14 +36,20 @@ class DataConfig:
         return config
 
     def validate(self) -> None:
-        if self.type not in {"json", "huggingface"}:
-            raise ValueError("data.type must be 'json' or 'huggingface'")
-        if not self.train_split or not self.validation_split:
+        if self.type not in {"json", "huggingface", "entailmentbank"}:
+            raise ValueError(
+                "data.type must be 'json', 'huggingface', or 'entailmentbank'"
+            )
+        if not self.train_split or not self.validation_split or not self.test_split:
             raise ValueError("data split names cannot be empty")
         if self.type == "json" and (not self.train_path or not self.validation_path):
             raise ValueError("JSON data requires train_path and validation_path")
-        if self.type == "huggingface" and not self.dataset_id:
+        if self.type in {"huggingface", "entailmentbank"} and not self.dataset_id:
             raise ValueError("Hugging Face data requires dataset_id")
+        if self.type == "entailmentbank" and not self.selection_metadata_path:
+            raise ValueError("EntailmentBank data requires selection_metadata_path")
+        if self.type == "entailmentbank" and not self.config_name:
+            raise ValueError("EntailmentBank data requires config_name")
 
 
 @dataclass(frozen=True)
@@ -66,11 +75,17 @@ class TrainingConfig:
     local_files_only: bool = False
     implementation: str = "reference"
     gradient_checkpointing: bool = False
+    precision: str = "fp32"
+    optimizer: str = "adamw"
+    optimizer_eps: float = 1e-8
     eval_every_epochs: int = 1
     checkpoint_every_epochs: int = 1
     accuracy_max_examples: int = 0
     qualitative_examples: int = 0
     qualitative_every_epochs: int = 1
+    early_stopping_patience: int | None = None
+    early_stopping_min_delta: float = 0.0
+    restore_best_stage_checkpoint: bool = False
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "TrainingConfig":
@@ -100,6 +115,7 @@ class TrainingConfig:
             "eval_every_epochs": self.eval_every_epochs,
             "checkpoint_every_epochs": self.checkpoint_every_epochs,
             "qualitative_every_epochs": self.qualitative_every_epochs,
+            "optimizer_eps": self.optimizer_eps,
         }
         for name, value in positive.items():
             if value <= 0:
@@ -110,8 +126,19 @@ class TrainingConfig:
             raise ValueError("weight_decay must be >= 0")
         if self.implementation not in {"reference", "batched"}:
             raise ValueError("implementation must be 'reference' or 'batched'")
+        if self.precision not in {"fp32", "fp16"}:
+            raise ValueError("precision must be 'fp32' or 'fp16'")
+        if self.optimizer not in {"adamw", "adamw8bit"}:
+            raise ValueError("optimizer must be 'adamw' or 'adamw8bit'")
         if self.accuracy_max_examples < 0 or self.qualitative_examples < 0:
             raise ValueError("accuracy/qualitative example counts must be >= 0")
+        if (
+            self.early_stopping_patience is not None
+            and self.early_stopping_patience < 1
+        ):
+            raise ValueError("early_stopping_patience must be >= 1 or null")
+        if self.early_stopping_min_delta < 0:
+            raise ValueError("early_stopping_min_delta must be >= 0")
         if self.max_length is not None and self.max_length < 2:
             raise ValueError("max_length must be >= 2")
         if isinstance(self.epochs_per_stage, int):
@@ -134,3 +161,7 @@ class TrainingConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def effective_batch_size(self) -> int:
+        return self.batch_size * self.gradient_accumulation_steps

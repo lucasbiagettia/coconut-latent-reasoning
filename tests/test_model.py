@@ -103,6 +103,7 @@ def test_backward_crosses_the_latent_reasoning_chain():
 
 
 def test_batched_matches_reference_logits_loss_and_gradients():
+    torch.manual_seed(0)
     tokenizer = CharacterTokenizer()
     encoder = CurriculumEncoder(tokenizer, c=1)
     examples = [

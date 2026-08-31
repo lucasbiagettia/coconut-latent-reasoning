@@ -1,0 +1,31 @@
+model_id: EleutherAI/pythia-70m
+output_dir: outputs/pythia70m_entailmentbank500
+device: cuda
+implementation: batched
+gradient_checkpointing: true
+
+data:
+  type: entailmentbank
+  dataset_id: sxiong/entailmentbank
+  config_name: task1
+  revision: 8c6c148f7a21c21ff037a42d9a22446c9d42debc
+  train_split: train
+  validation_split: validation
+  selection_metadata_path: data/experiments/entailmentbank500/selection_metadata.json
+
+batch_size: 1
+gradient_accumulation_steps: 16
+learning_rate: 0.0001
+weight_decay: 0.01
+max_latent_stage: 4
+c: 1
+epochs_per_stage: [1, 1, 1, 1, 1]
+max_length: 256
+eval_every_epochs: 1
+checkpoint_every_epochs: 1
+accuracy_max_examples: 100
+qualitative_examples: 3
+qualitative_every_epochs: 1
+inference_max_new_tokens: 64
+seed: 42
+local_files_only: false
